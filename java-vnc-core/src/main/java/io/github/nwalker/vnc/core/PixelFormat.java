@@ -64,11 +64,26 @@ public final class PixelFormat {
      */
     public int getBytesPerCPixel() {
         if (trueColor && bitsPerPixel == 32 && depth <= 24) {
-            boolean inLow  = redShift <= 7 && greenShift <= 7 && blueShift <= 7;
-            boolean inHigh = redShift >= 8 && greenShift >= 8 && blueShift >= 8;
+            int rBits = bitsForMax(redMax);
+            int gBits = bitsForMax(greenMax);
+            int bBits = bitsForMax(blueMax);
+            // All color bits fit in the least-significant 3 bytes (bits 0-23)?
+            boolean inLow  = (redShift + rBits <= 24)
+                          && (greenShift + gBits <= 24)
+                          && (blueShift + bBits <= 24);
+            // All color bits fit in the most-significant 3 bytes (bits 8-31)?
+            boolean inHigh = (redShift >= 8)
+                          && (greenShift >= 8)
+                          && (blueShift >= 8);
             if (inLow || inHigh) return 3;
         }
         return getBytesPerPixel();
+    }
+
+    /** Returns the number of bits needed to represent the given max value (which is 2^N - 1). */
+    private static int bitsForMax(int max) {
+        if (max <= 0) return 0;
+        return 32 - Integer.numberOfLeadingZeros(max);
     }
 
     // -------------------------------------------------------------------------
