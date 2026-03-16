@@ -9,6 +9,7 @@ import io.github.nwalker.vnc.core.VncServerProtocol;
 import io.github.nwalker.vnc.core.client.FramebufferUpdateRequest;
 import io.github.nwalker.vnc.core.client.SetEncodings;
 import io.github.nwalker.vnc.core.client.SetPixelFormat;
+import io.github.nwalker.vnc.core.encoding.CopyRectEncodingData;
 import io.github.nwalker.vnc.core.encoding.RawEncodingData;
 import io.github.nwalker.vnc.core.handshake.ProtocolVersionMessage;
 import io.github.nwalker.vnc.core.handshake.SecurityResult;
@@ -63,6 +64,7 @@ final class SimpleRfbServer implements RfbServer {
 
     private final SimpleVncServer owner;
     private VncServerProtocol protocol;
+    private volatile boolean supportsCopyRect;
 
     SimpleRfbServer(SimpleVncServer owner) {
         this.owner = owner;
@@ -75,6 +77,7 @@ final class SimpleRfbServer implements RfbServer {
     void run(InputStream in, OutputStream out) throws IOException {
         protocol = new VncServerProtocol(in, out, this);
         protocol.handshake();
+        owner.onClientConnected(this);
         protocol.receiveLoop();
     }
 
@@ -124,7 +127,7 @@ final class SimpleRfbServer implements RfbServer {
 
     @Override
     public void onSetEncodings(SetEncodings msg) {
-        // We always use RAW encoding regardless of client preferences.
+        supportsCopyRect = msg.getEncodingTypes().contains(EncodingType.COPY_RECT.getCode());
     }
 
     @Override
@@ -179,6 +182,61 @@ final class SimpleRfbServer implements RfbServer {
                 .build();
 
         return FramebufferUpdate.builder().addRectangle(rect).build();
+    }
+
+    /**
+     * Pushes a framebuffer update to this client that inserts new rows at the top,
+     * shifting existing content down using CopyRect (or a full RAW fallback).
+     *
+     * @param newRowPixels ARGB pixel data for the new rows ({@code width * rowCount} elements)
+     * @param rowCount     number of rows being inserted
+     * @param width        framebuffer width
+     * @param height       framebuffer height
+     */
+    void sendInsertRows(int[] newRowPixels, int rowCount, int width, int height) {
+        if (protocol == null) return;
+
+        int shiftedHeight = height - rowCount;
+
+        FramebufferUpdate.Builder updateBuilder = FramebufferUpdate.builder();
+
+        if (shiftedHeight > 0) {
+            if (supportsCopyRect) {
+                // CopyRect: tell the client to copy (0,0,width,shiftedHeight) to (0,rowCount)
+                Rectangle copyRect = Rectangle.builder()
+                        .x(0).y(rowCount).width(width).height(shiftedHeight)
+                        .encodingCode(EncodingType.COPY_RECT.getCode())
+                        .encodingData(CopyRectEncodingData.builder().srcX(0).srcY(0).build())
+                        .build();
+                updateBuilder.addRectangle(copyRect);
+            } else {
+                // Fallback: send the shifted region as RAW from the updated image
+                BufferedImage img = owner.getImage();
+                byte[] shiftedPixels = encodePixels(
+                        img.getRGB(0, rowCount, width, shiftedHeight, null, 0, width));
+                Rectangle rawShifted = Rectangle.builder()
+                        .x(0).y(rowCount).width(width).height(shiftedHeight)
+                        .encodingCode(EncodingType.RAW.getCode())
+                        .encodingData(RawEncodingData.builder().pixels(shiftedPixels).build())
+                        .build();
+                updateBuilder.addRectangle(rawShifted);
+            }
+        }
+
+        // RAW rectangle for the newly inserted rows at the top
+        byte[] topPixels = encodePixels(newRowPixels);
+        Rectangle rawTop = Rectangle.builder()
+                .x(0).y(0).width(width).height(rowCount)
+                .encodingCode(EncodingType.RAW.getCode())
+                .encodingData(RawEncodingData.builder().pixels(topPixels).build())
+                .build();
+        updateBuilder.addRectangle(rawTop);
+
+        try {
+            protocol.sendFramebufferUpdate(updateBuilder.build());
+        } catch (IOException e) {
+            // Connection will be cleaned up by the receive loop.
+        }
     }
 
     /**
