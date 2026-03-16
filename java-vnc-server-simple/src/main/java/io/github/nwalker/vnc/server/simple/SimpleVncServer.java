@@ -1,10 +1,13 @@
 package io.github.nwalker.vnc.server.simple;
 
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -66,6 +69,7 @@ public final class SimpleVncServer {
     private final int initialWidth;
     private final int initialHeight;
     private final AtomicInteger clientCount = new AtomicInteger();
+    private final List<SimpleRfbServer> sessions = new CopyOnWriteArrayList<>();
 
     private volatile boolean running;
     private ServerSocket serverSocket;
@@ -186,6 +190,61 @@ public final class SimpleVncServer {
         image.set(newImage);
     }
 
+    /**
+     * Inserts one or more rows of pixels at the top of the framebuffer, shifting
+     * existing rows down. Bottom rows that no longer fit are discarded so that
+     * the framebuffer dimensions remain unchanged.
+     *
+     * <p>Connected clients that advertised CopyRect support receive a CopyRect
+     * rectangle for the shifted region followed by a RAW rectangle for the new
+     * rows, minimising the data transferred. Clients that did not advertise
+     * CopyRect support receive a full RAW update instead.</p>
+     *
+     * @param argbPixels ARGB pixel data for the new rows, in row-major order.
+     *                   The array length must equal {@code getWidth() * rowCount}.
+     * @param rowCount   the number of rows to insert (must be between 1 and
+     *                   {@link #getHeight()} inclusive)
+     * @throws IllegalArgumentException if {@code rowCount} is out of range or
+     *                                  the pixel array length does not match
+     */
+    public void insertRows(int[] argbPixels, int rowCount) {
+        if (argbPixels == null) throw new IllegalArgumentException("argbPixels must not be null");
+        if (rowCount < 1 || rowCount > initialHeight) {
+            throw new IllegalArgumentException(
+                    "rowCount must be between 1 and " + initialHeight + ", got " + rowCount);
+        }
+        if (argbPixels.length != initialWidth * rowCount) {
+            throw new IllegalArgumentException(String.format(
+                    "argbPixels.length must be %d (width=%d * rowCount=%d), got %d",
+                    initialWidth * rowCount, initialWidth, rowCount, argbPixels.length));
+        }
+
+        // Build the new framebuffer: shift old content down, paint new rows on top.
+        BufferedImage oldImg = image.get();
+        BufferedImage newImg = new BufferedImage(initialWidth, initialHeight, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = newImg.createGraphics();
+        try {
+            int shiftedHeight = initialHeight - rowCount;
+            if (shiftedHeight > 0) {
+                // Draw old rows 0..shiftedHeight-1 at y=rowCount
+                g.drawImage(oldImg,
+                        0, rowCount, initialWidth, initialHeight,   // dst
+                        0, 0, initialWidth, shiftedHeight,          // src
+                        null);
+            }
+            // Paint the new rows at the top
+            newImg.setRGB(0, 0, initialWidth, rowCount, argbPixels, 0, initialWidth);
+        } finally {
+            g.dispose();
+        }
+        image.set(newImg);
+
+        // Push the update to all connected clients.
+        for (SimpleRfbServer session : sessions) {
+            session.sendInsertRows(argbPixels, rowCount, initialWidth, initialHeight);
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Accessors
     // -------------------------------------------------------------------------
@@ -215,8 +274,14 @@ public final class SimpleVncServer {
     /** Returns the current framebuffer image. */
     BufferedImage getImage() { return image.get(); }
 
+    /** Called by {@link SimpleRfbServer} after the handshake completes. */
+    void onClientConnected(SimpleRfbServer session) {
+        sessions.add(session);
+    }
+
     /** Called by {@link SimpleRfbServer} when its session ends. */
     void onClientDisconnected(SimpleRfbServer session, Exception cause) {
+        sessions.remove(session);
         clientCount.decrementAndGet();
     }
 
