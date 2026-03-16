@@ -1,0 +1,5 @@
+description = 'Simple VNC Server — streams a BufferedImage to connected clients'
+
+dependencies {
+    implementation project(':java-vnc-core')
+}

@@ -1,3 +1,4 @@
 rootProject.name = 'java-vnc-library'
 
 include 'java-vnc-core'
+include 'java-vnc-server-simple'
