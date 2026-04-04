@@ -14,7 +14,9 @@ public enum EncodingType {
     /** Cursor pseudo-encoding (Section 7.8.1). */
     CURSOR(-239),
     /** DesktopSize pseudo-encoding (Section 7.8.2). */
-    DESKTOP_SIZE(-223);
+    DESKTOP_SIZE(-223),
+    /** TightPNG encoding — PNG-compressed rectangles (encoding-type = -260). */
+    TIGHT_PNG(-260);
 
     private final int code;
 

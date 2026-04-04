@@ -11,6 +11,7 @@ import io.github.nwalker.vnc.core.encoding.HextileEncodingData;
 import io.github.nwalker.vnc.core.encoding.RawEncodingData;
 import io.github.nwalker.vnc.core.encoding.RreEncodingData;
 import io.github.nwalker.vnc.core.encoding.TrleEncodingData;
+import io.github.nwalker.vnc.core.encoding.TightPngEncodingData;
 import io.github.nwalker.vnc.core.encoding.ZrleEncodingData;
 
 import java.io.IOException;
@@ -96,6 +97,7 @@ public final class Rectangle {
                 case ZRLE:         return ZrleEncodingData.parse(in);
                 case CURSOR:       return CursorEncodingData.parse(in, w, h, pf);
                 case DESKTOP_SIZE: return DesktopSizeEncodingData.parse(in);
+                case TIGHT_PNG:    return TightPngEncodingData.parse(in);
             }
         }
         // Unknown encoding: store no bytes; the caller cannot safely continue parsing

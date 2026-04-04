@@ -543,6 +543,135 @@ class EncodingDataTest {
     // EncodingType constants — verifying RFC §7.7 and §7.8 wire codes
     // -------------------------------------------------------------------------
 
+    // -------------------------------------------------------------------------
+    // TightPngEncodingData (encoding-type = -260)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void tightPng_parse_compressionControlAndPngData() throws IOException {
+        // compression-control=0x09, compact-length=4 (single byte), then 4 bytes PNG data
+        byte[] payload = bytes(0x09, 0x04, 0x89, 0x50, 0x4E, 0x47); // ctrl, len=4, PNG magic start
+        TightPngEncodingData data = TightPngEncodingData.parse(stream(payload));
+        assertEquals((byte) 0x09, data.getCompressionControl());
+        assertArrayEquals(bytes(0x89, 0x50, 0x4E, 0x47), data.getPngData());
+    }
+
+    @Test
+    void tightPng_parse_compactLength_oneByte() throws IOException {
+        // compact-length fits in 1 byte (value < 128)
+        byte[] pngBytes = new byte[5];
+        byte[] payload = new byte[7]; // ctrl + 1-byte len + 5 data
+        payload[0] = 0x09;
+        payload[1] = 5; // compact length = 5
+        System.arraycopy(pngBytes, 0, payload, 2, 5);
+        TightPngEncodingData data = TightPngEncodingData.parse(stream(payload));
+        assertEquals(5, data.getPngData().length);
+    }
+
+    @Test
+    void tightPng_parse_compactLength_twoBytes() throws IOException {
+        // compact-length = 128, encoded as two bytes: 0x80, 0x01
+        byte[] pngBytes = new byte[128];
+        byte[] payload = new byte[131]; // ctrl + 2-byte len + 128 data
+        payload[0] = 0x09;
+        payload[1] = (byte) 0x80; // continuation bit set, low 7 bits = 0
+        payload[2] = 0x01;        // high bits: 1 << 7 = 128
+        System.arraycopy(pngBytes, 0, payload, 3, 128);
+        TightPngEncodingData data = TightPngEncodingData.parse(stream(payload));
+        assertEquals(128, data.getPngData().length);
+    }
+
+    @Test
+    void tightPng_parse_compactLength_threeBytes() throws IOException {
+        // compact-length = 16384, encoded as three bytes: 0x80, 0x80, 0x01
+        byte[] pngBytes = new byte[16384];
+        byte[] payload = new byte[16388]; // ctrl(1) + 3-byte len(3) + 16384 data
+        payload[0] = 0x09;
+        payload[1] = (byte) 0x80; // continuation, low 7 bits = 0
+        payload[2] = (byte) 0x80; // continuation, bits 7-13 = 0
+        payload[3] = 0x01;        // bits 14+: 1 << 14 = 16384
+        System.arraycopy(pngBytes, 0, payload, 4, 16384);
+        TightPngEncodingData data = TightPngEncodingData.parse(stream(payload));
+        assertEquals(16384, data.getPngData().length);
+    }
+
+    @Test
+    void tightPng_parse_consumesExactBytes() throws IOException {
+        // ctrl + len=1 + 1 data byte + sentinel
+        InputStream in = stream(0x09, 0x01, 0xAB, 0xFF);
+        TightPngEncodingData.parse(in);
+        assertEquals(0xFF, in.read());
+    }
+
+    @Test
+    void tightPng_write_compressionControlFirst() throws IOException {
+        byte[] pngBytes = bytes(0x01, 0x02);
+        TightPngEncodingData data = TightPngEncodingData.builder()
+                .compressionControl((byte) 0x09).pngData(pngBytes).build();
+        byte[] w = capture(data::write);
+        assertEquals((byte) 0x09, w[0]);
+    }
+
+    @Test
+    void tightPng_write_compactLength_oneByte() throws IOException {
+        byte[] pngBytes = new byte[10];
+        TightPngEncodingData data = TightPngEncodingData.builder().pngData(pngBytes).build();
+        byte[] w = capture(data::write);
+        // byte 0: ctrl, byte 1: compact-length=10 (fits in 1 byte), bytes 2-11: data
+        assertEquals(12, w.length);
+        assertEquals(10, w[1] & 0xFF);
+    }
+
+    @Test
+    void tightPng_write_compactLength_twoBytes_128() throws IOException {
+        byte[] pngBytes = new byte[128];
+        TightPngEncodingData data = TightPngEncodingData.builder().pngData(pngBytes).build();
+        byte[] w = capture(data::write);
+        // ctrl(1) + compact-length(2) + data(128) = 131
+        assertEquals(131, w.length);
+        assertEquals(0x80, w[1] & 0xFF); // first length byte: continuation + low 7 bits
+        assertEquals(0x01, w[2] & 0xFF); // second length byte: 128 >> 7 = 1
+    }
+
+    @Test
+    void tightPng_write_compactLength_threeBytes_16384() throws IOException {
+        byte[] pngBytes = new byte[16384];
+        TightPngEncodingData data = TightPngEncodingData.builder().pngData(pngBytes).build();
+        byte[] w = capture(data::write);
+        // ctrl(1) + compact-length(3) + data(16384) = 16388
+        assertEquals(16388, w.length);
+        assertEquals(0x80, w[1] & 0xFF);
+        assertEquals(0x80, w[2] & 0xFF);
+        assertEquals(0x01, w[3] & 0xFF);
+    }
+
+    @Test
+    void tightPng_getEncodingType() {
+        assertEquals(EncodingType.TIGHT_PNG,
+                TightPngEncodingData.builder().build().getEncodingType());
+    }
+
+    @Test
+    void tightPng_roundtrip() throws IOException {
+        byte[] pngBytes = bytes(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A); // PNG magic
+        TightPngEncodingData original = TightPngEncodingData.builder()
+                .compressionControl((byte) 0x09).pngData(pngBytes).build();
+        byte[] wire = capture(original::write);
+        assertEquals(original, TightPngEncodingData.parse(stream(wire)));
+    }
+
+    @Test
+    void tightPng_roundtrip_emptyPngData() throws IOException {
+        TightPngEncodingData original = TightPngEncodingData.builder()
+                .compressionControl((byte) 0x09).pngData(new byte[0]).build();
+        byte[] wire = capture(original::write);
+        assertEquals(original, TightPngEncodingData.parse(stream(wire)));
+    }
+
+    // -------------------------------------------------------------------------
+    // EncodingType constants — verifying RFC §7.7 and §7.8 wire codes
+    // -------------------------------------------------------------------------
+
     @Test
     void encodingType_wireCodes_matchRFC() {
         assertEquals(0,    EncodingType.RAW.getCode());
@@ -553,6 +682,7 @@ class EncodingDataTest {
         assertEquals(16,   EncodingType.ZRLE.getCode());
         assertEquals(-239, EncodingType.CURSOR.getCode());       // §7.8.1
         assertEquals(-223, EncodingType.DESKTOP_SIZE.getCode()); // §7.8.2
+        assertEquals(-260, EncodingType.TIGHT_PNG.getCode());
     }
 
     @Test
@@ -565,6 +695,7 @@ class EncodingDataTest {
         assertEquals(EncodingType.ZRLE,         EncodingType.fromCode(16));
         assertEquals(EncodingType.CURSOR,       EncodingType.fromCode(-239));
         assertEquals(EncodingType.DESKTOP_SIZE, EncodingType.fromCode(-223));
+        assertEquals(EncodingType.TIGHT_PNG,    EncodingType.fromCode(-260));
     }
 
     @Test
